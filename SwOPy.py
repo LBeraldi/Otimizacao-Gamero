@@ -33,6 +33,7 @@ from __future__ import annotations
 import csv
 import math
 import random
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +45,7 @@ from typing import Dict, List, Tuple
 
 RANDOM_SEED = 6
 POP_SIZE = 500
-N_GENERATIONS = 5000
+N_GENERATIONS = 10000
 ELITE_COUNT = 3              # escolha prática para elitismo
 CROSSOVER_RATE = 0.90        # Pc
 MUTATION_RATE = 0.30         # Pm
@@ -186,6 +187,8 @@ class GARunResult:
     best_penalized_cost_usd: float
     best_penalty_usd: float
     best_generation: int
+    time_to_best_seconds: float
+    elapsed_seconds: float
     history_best: List[float]
 
 
@@ -504,6 +507,7 @@ def mutate_one_component(chromosome: List[int]) -> None:
 
 
 def run_ga() -> GARunResult:
+    start_time = time.perf_counter()
     random.seed(RANDOM_SEED)
 
     population = [random_chromosome() for _ in range(POP_SIZE)]
@@ -514,6 +518,7 @@ def run_ga() -> GARunResult:
     best_penalized = float("inf")
     best_penalty = 0.0
     best_generation = 1
+    time_to_best_seconds = 0.0
 
     for generation in range(1, N_GENERATIONS + 1):
         # Cada cromossomo vira uma tupla: (custo_penalizado, avaliação_base, penalidade).
@@ -536,6 +541,7 @@ def run_ga() -> GARunResult:
             best_eval = base_evals[0]
             best_penalty = penalties[0]
             best_generation = generation
+            time_to_best_seconds = time.perf_counter() - start_time
 
         history_best.append(penalized_values[0])
 
@@ -568,12 +574,15 @@ def run_ga() -> GARunResult:
         population = new_population
 
     assert best_chromosome is not None and best_eval is not None
+    elapsed_seconds = time.perf_counter() - start_time
     return GARunResult(
         best_chromosome=best_chromosome,
         best_eval=best_eval,
         best_penalized_cost_usd=best_penalized,
         best_penalty_usd=best_penalty,
         best_generation=best_generation,
+        time_to_best_seconds=time_to_best_seconds,
+        elapsed_seconds=elapsed_seconds,
         history_best=history_best,
     )
 
@@ -581,6 +590,13 @@ def run_ga() -> GARunResult:
 # ============================================================
 # RELATÓRIOS
 # ============================================================
+
+def format_elapsed(seconds: float) -> str:
+    total_seconds = int(seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
 
 def row_inconsistencies(row: EdgeResult) -> List[str]:
     inconsistencies: List[str] = []
@@ -610,6 +626,8 @@ def print_solution(
     best_penalized_cost_usd: float | None = None,
     best_penalty_usd: float | None = None,
     best_generation: int | None = None,
+    time_to_best_seconds: float | None = None,
+    elapsed_seconds: float | None = None,
     final_penalized_cost_usd: float | None = None,
     final_penalty_usd: float | None = None,
 ) -> None:
@@ -626,6 +644,16 @@ def print_solution(
         print(f"Penalidade no AG:                 {best_penalty_usd:,.2f} US$")
     if best_generation is not None:
         print(f"Geração do melhor penalizado:     {best_generation}")
+    if time_to_best_seconds is not None:
+        print(
+            f"Tempo ate o melhor resultado:     "
+            f"{format_elapsed(time_to_best_seconds)} ({time_to_best_seconds:.2f} s)"
+        )
+    if elapsed_seconds is not None:
+        print(
+            f"Tempo total da execucao do AG:     "
+            f"{format_elapsed(elapsed_seconds)} ({elapsed_seconds:.2f} s)"
+        )
     if final_penalized_cost_usd is not None:
         print(f"Custo penalizado na geração final:{final_penalized_cost_usd:>13,.2f} US$")
     if final_penalty_usd is not None:
@@ -684,7 +712,11 @@ def compare_against_published(best_eval: EvaluationResult) -> None:
     print(f"Desvio desta execução vs. publicado:          {diff_best_vs_published:,.2f} US$")
 
 
-def export_solution_csv(result: EvaluationResult, filepath: Path) -> None:
+def export_solution_csv(
+    result: EvaluationResult,
+    filepath: Path,
+    ga_result: GARunResult | None = None,
+) -> None:
     feasible = result.excess_lamina <= 1e-12 and result.deficit_shear <= 1e-12
     problematic_rows = solution_problem_messages(result)
     hydraulic_message = (
@@ -723,6 +755,12 @@ def export_solution_csv(result: EvaluationResult, filepath: Path) -> None:
         writer.writerow(["hydraulic_message", hydraulic_message])
         writer.writerow(["excess_lamina", result.excess_lamina])
         writer.writerow(["deficit_shear", result.deficit_shear])
+        if ga_result is not None:
+            writer.writerow(["best_generation", ga_result.best_generation])
+            writer.writerow(["time_to_best_seconds", round(ga_result.time_to_best_seconds, 6)])
+            writer.writerow(["time_to_best_formatted", format_elapsed(ga_result.time_to_best_seconds)])
+            writer.writerow(["elapsed_seconds", round(ga_result.elapsed_seconds, 6)])
+            writer.writerow(["elapsed_formatted", format_elapsed(ga_result.elapsed_seconds)])
         for message in problematic_rows:
             writer.writerow(["problematic_section", message])
         writer.writerow(["final_pv_cost_usd", result.final_pv_cost_usd])
@@ -755,6 +793,8 @@ def main() -> None:
         best_penalized_cost_usd=ga_result.best_penalized_cost_usd,
         best_penalty_usd=ga_result.best_penalty_usd,
         best_generation=ga_result.best_generation,
+        time_to_best_seconds=ga_result.time_to_best_seconds,
+        elapsed_seconds=ga_result.elapsed_seconds,
         final_penalized_cost_usd=final_penalized_cost_usd,
         final_penalty_usd=final_penalty_usd,
     )
@@ -762,7 +802,7 @@ def main() -> None:
 
     base_dir = Path(__file__).resolve().parent
     csv_path = base_dir / "SwOPy_resultado.csv"
-    export_solution_csv(ga_result.best_eval, csv_path)
+    export_solution_csv(ga_result.best_eval, csv_path, ga_result)
     print(f"\nArquivo exportado: {csv_path.name}")
 
 
