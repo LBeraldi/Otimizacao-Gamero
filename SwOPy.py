@@ -42,7 +42,7 @@ from typing import Dict, List, Tuple
 # PARÂMETROS DO EXPERIMENTO 
 # ============================================================
 
-RANDOM_SEED = 6           
+RANDOM_SEED = 6
 POP_SIZE = 500
 N_GENERATIONS = 5000
 ELITE_COUNT = 3              # escolha prática para elitismo

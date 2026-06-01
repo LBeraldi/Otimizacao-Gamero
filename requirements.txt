@@ -1,0 +1,26 @@
+# Requisitos do Projeto
+# SwOPy & Sewer Optimizer
+# 
+# Este projeto usa APENAS bibliotecas padrão do Python
+# Nenhuma instalação de dependências externas é necessária
+#
+# Python mínimo: 3.7+
+# Python recomendado: 3.9+
+#
+# Bibliotecas utilizadas (todas padrão):
+# - csv: leitura/escrita de arquivos CSV
+# - json: leitura/escrita de configurações JSON
+# - math: cálculos matemáticos
+# - random: geração de números aleatórios (AG)
+# - statistics: estatísticas (média, desvio padrão)
+# - argparse: interface de linha de comando
+# - dataclasses: definição de estruturas de dados
+# - collections: defaultdict, deque
+# - pathlib: manipulação de caminhos
+# - typing: type hints
+#
+# Para instalar Python:
+# 1. Acesse: https://www.python.org/downloads/
+# 2. Baixe Python 3.11 (ou versão mais recente)
+# 3. Execute o instalador com "Add Python to PATH" marcado
+# 4. Verifique: python --version
