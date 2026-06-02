@@ -32,9 +32,11 @@ from __future__ import annotations
 
 import csv
 import math
+import os
 import random
 import time
 from collections import defaultdict, deque
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -45,10 +47,14 @@ from typing import Dict, List, Tuple
 
 RANDOM_SEED = 6
 POP_SIZE = 500
-N_GENERATIONS = 10000
+N_GENERATIONS = 5000
 ELITE_COUNT = 3              # escolha prática para elitismo
 CROSSOVER_RATE = 0.90        # Pc
 MUTATION_RATE = 0.30         # Pm
+
+RUN_MULTIPLE_SEEDS = True
+N_SEED_RUNS = 8
+MAX_PARALLEL_WORKERS = max(1, (os.cpu_count() or 2) - 1)
 
 AC_MIN = 1.50                # profundidade inicial adotada para pontas de rede
 K_PENALTY = 0.8              # expoente sugerido no texto
@@ -182,6 +188,7 @@ class EvaluationResult:
 
 @dataclass
 class GARunResult:
+    seed_used: int
     best_chromosome: List[int]
     best_eval: EvaluationResult
     best_penalized_cost_usd: float
@@ -506,9 +513,9 @@ def mutate_one_component(chromosome: List[int]) -> None:
     chromosome[idx] = random.choice(options)
 
 
-def run_ga() -> GARunResult:
+def run_ga(seed: int = RANDOM_SEED, verbose: bool = True) -> GARunResult:
     start_time = time.perf_counter()
-    random.seed(RANDOM_SEED)
+    random.seed(seed)
 
     population = [random_chromosome() for _ in range(POP_SIZE)]
     history_best: List[float] = []
@@ -545,7 +552,7 @@ def run_ga() -> GARunResult:
 
         history_best.append(penalized_values[0])
 
-        if generation == 1 or generation % 100 == 0:
+        if verbose and (generation == 1 or generation % 100 == 0):
             print(
                 f"Geração {generation:4d} | "
                 f"Melhor custo penalizado = {penalized_values[0]:,.2f} | "
@@ -576,6 +583,7 @@ def run_ga() -> GARunResult:
     assert best_chromosome is not None and best_eval is not None
     elapsed_seconds = time.perf_counter() - start_time
     return GARunResult(
+        seed_used=seed,
         best_chromosome=best_chromosome,
         best_eval=best_eval,
         best_penalized_cost_usd=best_penalized,
@@ -584,6 +592,63 @@ def run_ga() -> GARunResult:
         time_to_best_seconds=time_to_best_seconds,
         elapsed_seconds=elapsed_seconds,
         history_best=history_best,
+    )
+
+
+def is_solution_feasible(result: EvaluationResult) -> bool:
+    return result.excess_lamina <= 1e-12 and result.deficit_shear <= 1e-12
+
+
+def seed_result_rank(run: GARunResult) -> Tuple[int, float, float, float]:
+    feasible_rank = 0 if is_solution_feasible(run.best_eval) else 1
+    cost_rank = run.best_eval.total_cost_usd if feasible_rank == 0 else run.best_penalized_cost_usd
+    return feasible_rank, cost_rank, run.best_penalty_usd, run.elapsed_seconds
+
+
+def run_seed_worker(seed: int) -> GARunResult:
+    return run_ga(seed=seed, verbose=False)
+
+
+def run_ga_for_seeds(seeds: List[int]) -> List[GARunResult]:
+    unique_seeds = list(dict.fromkeys(seeds))
+    if not unique_seeds:
+        raise ValueError("A lista de seeds nao pode ficar vazia.")
+
+    worker_count = min(MAX_PARALLEL_WORKERS, len(unique_seeds))
+    print(
+        f"\nRodando {len(unique_seeds)} seeds em paralelo "
+        f"com {worker_count} processo(s)..."
+    )
+
+    results: List[GARunResult] = []
+    if worker_count == 1:
+        for seed in unique_seeds:
+            result = run_seed_worker(seed)
+            results.append(result)
+            print_seed_run_finished(result)
+    else:
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(run_seed_worker, seed): seed
+                for seed in unique_seeds
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
+                print_seed_run_finished(result)
+
+    results.sort(key=seed_result_rank)
+    return results
+
+
+def print_seed_run_finished(result: GARunResult) -> None:
+    status = "VIAVEL" if is_solution_feasible(result.best_eval) else "INVIAVEL"
+    print(
+        f"  Seed {result.seed_used:>5} | {status:<7} | "
+        f"custo={result.best_eval.total_cost_usd:>12,.2f} US$ | "
+        f"penalidade={result.best_penalty_usd:>10,.2f} | "
+        f"geracao={result.best_generation:>5} | "
+        f"tempo={format_elapsed(result.elapsed_seconds)}"
     )
 
 
@@ -623,6 +688,7 @@ def print_solution(
     title: str,
     chromosome: List[int],
     result: EvaluationResult,
+    seed_used: int | None = None,
     best_penalized_cost_usd: float | None = None,
     best_penalty_usd: float | None = None,
     best_generation: int | None = None,
@@ -638,6 +704,8 @@ def print_solution(
     print(title)
     print("=" * 108)
     print(f"Custo total calculado:            {result.total_cost_usd:,.2f} US$")
+    if seed_used is not None:
+        print(f"Seed usada:                       {seed_used}")
     if best_penalized_cost_usd is not None:
         print(f"Custo penalizado no AG:           {best_penalized_cost_usd:,.2f} US$")
     if best_penalty_usd is not None:
@@ -716,6 +784,7 @@ def export_solution_csv(
     result: EvaluationResult,
     filepath: Path,
     ga_result: GARunResult | None = None,
+    all_runs: List[GARunResult] | None = None,
 ) -> None:
     feasible = result.excess_lamina <= 1e-12 and result.deficit_shear <= 1e-12
     problematic_rows = solution_problem_messages(result)
@@ -756,6 +825,7 @@ def export_solution_csv(
         writer.writerow(["excess_lamina", result.excess_lamina])
         writer.writerow(["deficit_shear", result.deficit_shear])
         if ga_result is not None:
+            writer.writerow(["seed_used", ga_result.seed_used])
             writer.writerow(["best_generation", ga_result.best_generation])
             writer.writerow(["time_to_best_seconds", round(ga_result.time_to_best_seconds, 6)])
             writer.writerow(["time_to_best_formatted", format_elapsed(ga_result.time_to_best_seconds)])
@@ -765,6 +835,25 @@ def export_solution_csv(
             writer.writerow(["problematic_section", message])
         writer.writerow(["final_pv_cost_usd", result.final_pv_cost_usd])
         writer.writerow(["total_cost_usd", result.total_cost_usd])
+        if all_runs:
+            writer.writerow([])
+            writer.writerow([
+                "seed", "rank", "feasible", "total_cost_usd", "penalty_usd",
+                "penalized_cost_usd", "best_generation", "time_to_best_seconds",
+                "elapsed_seconds",
+            ])
+            for rank, run in enumerate(sorted(all_runs, key=seed_result_rank), start=1):
+                writer.writerow([
+                    run.seed_used,
+                    rank,
+                    "sim" if is_solution_feasible(run.best_eval) else "nao",
+                    run.best_eval.total_cost_usd,
+                    run.best_penalty_usd,
+                    run.best_penalized_cost_usd,
+                    run.best_generation,
+                    round(run.time_to_best_seconds, 6),
+                    round(run.elapsed_seconds, 6),
+                ])
 
 
 # ============================================================
@@ -780,7 +869,18 @@ def main() -> None:
     print(f"\nÓtimo publicado na dissertação: {PUBLISHED_OPTIMUM_TOTAL_USD:,.2f} US$")
     print(f"Ótimo publicado recalculado por este script: {published_eval.total_cost_usd:,.2f} US$")
 
-    ga_result = run_ga()
+    if RUN_MULTIPLE_SEEDS:
+        seeds = [RANDOM_SEED + i for i in range(N_SEED_RUNS)]
+        all_runs = run_ga_for_seeds(seeds)
+        ga_result = all_runs[0]
+        print(
+            f"\nMelhor seed selecionada: {ga_result.seed_used} "
+            f"({'VIAVEL' if is_solution_feasible(ga_result.best_eval) else 'INVIAVEL'})"
+        )
+    else:
+        ga_result = run_ga(seed=RANDOM_SEED)
+        all_runs = [ga_result]
+
     final_penalized_cost_usd, _, final_penalty_usd = penalized_cost(
         ga_result.best_chromosome,
         N_GENERATIONS,
@@ -790,6 +890,7 @@ def main() -> None:
         "MELHOR SOLUÇÃO ENCONTRADA",
         ga_result.best_chromosome,
         ga_result.best_eval,
+        seed_used=ga_result.seed_used,
         best_penalized_cost_usd=ga_result.best_penalized_cost_usd,
         best_penalty_usd=ga_result.best_penalty_usd,
         best_generation=ga_result.best_generation,
@@ -802,7 +903,7 @@ def main() -> None:
 
     base_dir = Path(__file__).resolve().parent
     csv_path = base_dir / "SwOPy_resultado.csv"
-    export_solution_csv(ga_result.best_eval, csv_path, ga_result)
+    export_solution_csv(ga_result.best_eval, csv_path, ga_result, all_runs)
     print(f"\nArquivo exportado: {csv_path.name}")
 
 
