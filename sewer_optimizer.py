@@ -1320,7 +1320,7 @@ Formato do CSV de rede (colunas obrigatórias):
     )
     parser.add_argument("--network",          type=Path, help="CSV com os trechos da rede")
     parser.add_argument("--config",           type=Path, help="JSON de configuração (opcional)")
-    parser.add_argument("--output",           type=Path, default=Path("."), help="Diretório de saída (default: .)")
+    parser.add_argument("--output",           type=Path, default=Path("resultados"), help="Diretório de saída (default: resultados)")
     parser.add_argument("--generate-samples", action="store_true", help="Gera CSVs/JSON de exemplo e sai")
     parser.add_argument("--no-excel",         action="store_true", help="Pula geração do Excel")
     parser.add_argument("--quiet",            action="store_true", help="Modo silencioso (sem progresso por geração)")

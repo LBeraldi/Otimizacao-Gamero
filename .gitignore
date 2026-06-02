@@ -1,3 +1,8 @@
 __pycache__/
 *.py[cod]
 .claude/settings.local.json
+
+# Resultados dos testes/otimizações (pasta gerada automaticamente)
+resultados/
+!resultados/.gitkeep
+!resultados/README.md

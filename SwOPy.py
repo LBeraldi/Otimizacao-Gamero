@@ -45,7 +45,7 @@ from typing import Dict, List, Tuple
 
 RANDOM_SEED = 6
 POP_SIZE = 500
-N_GENERATIONS = 10000
+N_GENERATIONS = 5000
 ELITE_COUNT = 3              # escolha prática para elitismo
 CROSSOVER_RATE = 0.90        # Pc
 MUTATION_RATE = 0.30         # Pm
@@ -801,9 +801,11 @@ def main() -> None:
     compare_against_published(ga_result.best_eval)
 
     base_dir = Path(__file__).resolve().parent
-    csv_path = base_dir / "SwOPy_resultado.csv"
+    output_dir = base_dir / "resultados"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / "SwOPy_resultado.csv"
     export_solution_csv(ga_result.best_eval, csv_path, ga_result)
-    print(f"\nArquivo exportado: {csv_path.name}")
+    print(f"\nArquivo exportado: {csv_path}")
 
 
 if __name__ == "__main__":
