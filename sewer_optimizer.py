@@ -30,9 +30,12 @@ import csv
 import io
 import json
 import math
+import multiprocessing
+import os
 import random
 import sys
 import statistics
+import time
 from collections import defaultdict, deque
 
 # Garante saída UTF-8 no Windows (evita UnicodeEncodeError no console)
@@ -790,42 +793,97 @@ def run_ga(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MÚLTIPLAS EXECUÇÕES
+# MÚLTIPLAS EXECUÇÕES — COM PARALELISMO
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _worker(args: Tuple) -> GARunResult:
+    """Função executada em cada processo filho — roda uma execução do AG."""
+    edges, cfg, in_edges, out_edge, topo_order, outlet_node, hyd_cache, run_id, seed = args
+    return run_ga(
+        edges, cfg, in_edges, out_edge, topo_order, outlet_node, hyd_cache,
+        run_id=run_id, seed=seed, verbose=False,
+    )
+
+
+def _collect_stats(all_runs: List[GARunResult], n_runs: int) -> MultiRunStats:
+    feasible = [r for r in all_runs if r.best_eval.is_feasible]
+    pool = feasible if feasible else all_runs
+    costs = [r.best_eval.total_cost for r in pool]
+    return MultiRunStats(
+        n_runs=n_runs,
+        best_run=min(pool, key=lambda r: r.best_eval.total_cost),
+        all_runs=all_runs,
+        feasible_runs=feasible,
+        mean_cost=statistics.mean(costs)  if len(costs) > 1 else costs[0],
+        std_cost=statistics.stdev(costs)  if len(costs) > 1 else 0.0,
+        min_cost=min(costs),
+        max_cost=max(costs),
+    )
+
 
 def run_multiple(
     edges, cfg, in_edges, out_edge, topo_order, outlet_node, hyd_cache,
     verbose: bool = True,
+    n_workers: Optional[int] = None,
 ) -> MultiRunStats:
-    all_runs: List[GARunResult] = []
-    for i in range(cfg.n_runs):
-        seed = cfg.random_seed + i
-        print(f"\n{'='*60}")
-        print(f"EXECUÇÃO {i+1}/{cfg.n_runs}  (seed={seed})")
+    """
+    Roda cfg.n_runs execuções do AG.
+
+    Se n_workers > 1 (ou None = detecta núcleos automaticamente),
+    executa em paralelo usando multiprocessing.Pool.
+    Cada execução usa seed = cfg.random_seed + run_id.
+    """
+    # Determina quantos núcleos usar
+    cpu_count = os.cpu_count() or 1
+    if n_workers is None:
+        # Usa no máximo todos os núcleos, mas não mais que n_runs
+        n_workers = min(cfg.n_runs, cpu_count)
+
+    # Monta lista de argumentos para cada worker
+    job_args = [
+        (edges, cfg, in_edges, out_edge, topo_order, outlet_node, hyd_cache,
+         i + 1, cfg.random_seed + i)
+        for i in range(cfg.n_runs)
+    ]
+
+    t_start = time.time()
+
+    if n_workers > 1 and cfg.n_runs > 1:
+        # ── Execução paralela ─────────────────────────────────────────────
+        print(f"\nParalelismo: {n_workers} núcleos / {cfg.n_runs} execuções")
         print(f"{'='*60}")
-        r = run_ga(edges, cfg, in_edges, out_edge, topo_order, outlet_node, hyd_cache,
-                   run_id=i+1, seed=seed, verbose=verbose)
-        all_runs.append(r)
-        feas_str = "VIAVEL" if r.best_eval.is_feasible else "INVIAVEL"
-        print(f"  >> Melhor custo base: {r.best_eval.total_cost:,.2f} {cfg.currency}  ({feas_str})")
 
-    feasible = [r for r in all_runs if r.best_eval.is_feasible]
-    # Se não há viáveis, usa todas para estatísticas
-    pool = feasible if feasible else all_runs
-    costs = [r.best_eval.total_cost for r in pool]
+        with multiprocessing.Pool(processes=n_workers) as pool:
+            all_runs: List[GARunResult] = pool.map(_worker, job_args)
 
-    mean_c = statistics.mean(costs)    if len(costs) > 1 else costs[0]
-    std_c  = statistics.stdev(costs)   if len(costs) > 1 else 0.0
-    min_c  = min(costs)
-    max_c  = max(costs)
+        # Ordena pelo run_id para exibição consistente
+        all_runs.sort(key=lambda r: r.run_id)
+    else:
+        # ── Execução sequencial (fallback se n_workers=1 ou n_runs=1) ────
+        all_runs = []
+        for i, args in enumerate(job_args):
+            seed = cfg.random_seed + i
+            print(f"\n{'='*60}")
+            print(f"EXECUÇÃO {i+1}/{cfg.n_runs}  (seed={seed})")
+            print(f"{'='*60}")
+            r = run_ga(edges, cfg, in_edges, out_edge, topo_order, outlet_node, hyd_cache,
+                       run_id=i+1, seed=seed, verbose=verbose)
+            all_runs.append(r)
 
-    best_run = min(pool, key=lambda r: r.best_eval.total_cost)
+    elapsed = time.time() - t_start
 
-    return MultiRunStats(
-        n_runs=cfg.n_runs, best_run=best_run, all_runs=all_runs,
-        feasible_runs=feasible,
-        mean_cost=mean_c, std_cost=std_c, min_cost=min_c, max_cost=max_c,
-    )
+    # Exibe resumo de cada execução
+    print(f"\n{'─'*60}")
+    print(f"{'#':>3}  {'seed':>6}  {'custo':>14}  {'viável':>8}  {'melhor gen':>10}")
+    print(f"{'─'*60}")
+    for r in all_runs:
+        feas = "SIM" if r.best_eval.is_feasible else "nao"
+        print(f"  {r.run_id:>1}  {r.seed_used:>6}  "
+              f"{r.best_eval.total_cost:>14,.2f}  {feas:>8}  {r.best_generation:>10}")
+    print(f"{'─'*60}")
+    print(f"Tempo total: {elapsed:.1f}s  |  média por execução: {elapsed/cfg.n_runs:.1f}s")
+
+    return _collect_stats(all_runs, cfg.n_runs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1324,6 +1382,8 @@ Formato do CSV de rede (colunas obrigatórias):
     parser.add_argument("--generate-samples", action="store_true", help="Gera CSVs/JSON de exemplo e sai")
     parser.add_argument("--no-excel",         action="store_true", help="Pula geração do Excel")
     parser.add_argument("--quiet",            action="store_true", help="Modo silencioso (sem progresso por geração)")
+    parser.add_argument("--workers",          type=int, default=None,
+                        help="Número de núcleos paralelos (default: automático = todos os núcleos disponíveis)")
     args = parser.parse_args()
 
     # ── Gerar amostras ────────────────────────────────────────────────────────
@@ -1348,8 +1408,12 @@ Formato do CSV de rede (colunas obrigatórias):
     cfg = load_config(args.config)
     print(f"  Config       : {args.config or '(padrões internos)'}")
     print(f"  Moeda        : {cfg.currency} ({cfg.cost_year})")
+    n_workers = args.workers  # None = automático
+    cpu_count = os.cpu_count() or 1
+    effective_workers = min(cfg.n_runs, n_workers or cpu_count)
     print(f"  GA           : pop={cfg.population_size}, gen={cfg.n_generations}, "
           f"Pc={cfg.crossover_rate}, Pm={cfg.mutation_rate}, runs={cfg.n_runs}")
+    print(f"  Paralelismo  : {effective_workers} núcleo(s) de {cpu_count} disponível(is)")
 
     # ── Carregar rede ─────────────────────────────────────────────────────────
     if not args.network.exists():
@@ -1381,7 +1445,7 @@ Formato do CSV de rede (colunas obrigatórias):
     # ── Execução do AG ────────────────────────────────────────────────────────
     print(f"\nIniciando {cfg.n_runs} execução(ões) do Algoritmo Genético...")
     stats = run_multiple(edges, cfg, in_edges, out_edge, topo_order, outlet_node, hyd_cache,
-                         verbose=not args.quiet)
+                         verbose=not args.quiet, n_workers=n_workers)
 
     # ── Relatório console ─────────────────────────────────────────────────────
     print_run_summary(stats, cfg)
@@ -1401,4 +1465,5 @@ Formato do CSV de rede (colunas obrigatórias):
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()  # necessário para executável Windows (.exe)
     main()
